@@ -1,4 +1,5 @@
 """ LEval benchmark metric. """
+import json
 import os
 import sys
 
@@ -264,7 +265,7 @@ def process_output_mc(response):
     cleaned_str = re.sub(r'[^A-D]', '', cleaned_str)
     s_set = set(cleaned_str)
     cleaned_str = "".join(sorted(s_set))
-    if len(cleaned_str) < 1:  
+    if len(cleaned_str) < 1:
         has_answer = False
         for chr in response:
             if chr in "ABCD":
@@ -273,7 +274,7 @@ def process_output_mc(response):
                 has_answer = True
             elif has_answer:
                 break
-    if len(cleaned_str) < 1:  
+    if len(cleaned_str) < 1:
         cleaned_str = "A"
     return cleaned_str
 
@@ -328,10 +329,10 @@ def process_output_code(response, gt):
     if "the final output" in response:
         response = response.split("the final output")[-1]
         # get the output from the final output
-        res  =  re.split(r'\s+', response)[:(gt_len+3)]
+        res = re.split(r'\s+', response)[:(gt_len + 3)]
     else:
         # get the last output
-        res =  re.split(r'\s+', response)[-(gt_len+3):]
+        res = re.split(r'\s+', response)[-(gt_len + 3):]
     return " ".join(res)
 
 
@@ -366,7 +367,7 @@ def process_output_judge(response):
     if len(output_list) == 1:
         output_list.append("<error>")
 
-    return output_list # disable random guess for the dataset for high variance
+    return output_list  # disable random guess for the dataset for high variance
 
 
 def process_gt_code(response):
@@ -385,7 +386,16 @@ if __name__ == '__main__':
 
     parser = argparse.ArgumentParser()
     parser.add_argument("--pred_file", type=str, default="", help="example: turbo-16k-0613-output/output.jsonl")
+    parser.add_argument("--task_name", type=str, help='Task name of metric')
+    parser.add_argument("--output_file", type=str, help='Output metric file')
     args = parser.parse_args()
+
+    if args.task_name is None:
+        fn = os.path.basename(args.pred_file)
+        if fn.endswith('.pred.jsonl'):
+            args.task_name = fn[:-len('.pred.jsonl')]
+        else:
+            args.task_name = fn.split('.')[0]
     # This script can calulate these metrics
     SUPPORT_METRICS = ["f1", "rouge", "exam"]
 
@@ -399,7 +409,7 @@ if __name__ == '__main__':
 
     predictions = []
     references = []
-    if  "topic_retrieval_longchat" in args.pred_file:
+    if "topic_retrieval_longchat" in args.pred_file:
         references = [[], [], []]
         predictions = [[], [], []]
     elif "sci_fi" in args.pred_file:
@@ -414,7 +424,7 @@ if __name__ == '__main__':
             with_options = True
             break
 
-    for i,instance in enumerate(pred_data):
+    for i, instance in enumerate(pred_data):
         if instance["evaluation"] not in SUPPORT_METRICS:
             continue
         if with_options:
@@ -427,8 +437,8 @@ if __name__ == '__main__':
             references.append([process_gt_code(instance["gt"])])
             predictions.append(process_output_code(instance[prediction_key], instance["gt"]))
         elif "topic_retrieval_longchat" in args.pred_file:
-            references[i%3].append([instance["gt"]])
-            predictions[i%3].append(instance[prediction_key])
+            references[i % 3].append([instance["gt"]])
+            predictions[i % 3].append(instance[prediction_key])
         elif "sci_fi" in args.pred_file:
             loyalty, fact = process_gt_judge(instance["gt"])
             references[0].append([loyalty])
@@ -448,32 +458,77 @@ if __name__ == '__main__':
         if "topic_retrieval_longchat" in args.pred_file:
             output_str = ""
             balance_score = 0
+            first_1_score = 0
+            first_2_score = 0
+            first_3_score = 0
             for i in range(len(predictions)):
                 pred = predictions[i]
                 ref = references[i]
                 metrics = LEval_metric.compute(predictions=pred, references=ref)
-                output_str += f"first {i+1} sentence retrieval score: {metrics}\n"
+                output_str += f"first {i + 1} sentence retrieval score: {metrics}\n"
                 balance_score += metrics["exact_match"]
+                if i == 0:
+                    first_1_score = metrics["exact_match"]
+                elif i == 1:
+                    first_2_score = metrics["exact_match"]
+                elif i == 2:
+                    first_3_score = metrics["exact_match"]
+
             print(output_str[:-1])
-            print(f"average score of the 1st/2nd/3rd sentence retrieval: {balance_score/3}")
+            print(f"average score of the 1st/2nd/3rd sentence retrieval: {balance_score / 3}")
+            with open(args.output_file, 'a') as file:
+                file.write(json.dumps({
+                    'results': {
+                        f'l_eval_{args.task_name}': {
+                            'score': (balance_score / 3) / 100,
+                            'first_1_score': first_1_score,
+                            'first_2_score': first_2_score,
+                            'first_3_score': first_3_score,
+                        }
+                    }
+                }, ensure_ascii=False) + '\n')
 
         elif "sci_fi" in args.pred_file:
             output_str = ""
             balance_score = 0
+            fact_score = 0
+            loyalty_score = 0
             for i in range(len(predictions)):
                 pred = predictions[i]
                 ref = references[i]
                 metrics = LEval_metric.compute(predictions=pred, references=ref)
-                if i ==0:
+                if i == 0:
                     output_str += f"loyalty score: {metrics}\n"
+                    loyalty_score = metrics["exact_match"]
                 else:
                     output_str += f"fact score: {metrics}"
+                    fact_score = metrics["exact_match"]
                 balance_score += metrics["exact_match"]
             print(output_str)
-            print(f"average score of fact and loyalty: {balance_score/2}")
+            print(f"average score of fact and loyalty: {balance_score / 2}")
+            with open(args.output_file, 'a') as file:
+                file.write(json.dumps({
+                    'results': {
+                        f'l_eval_{args.task_name}': {
+                            'score': (balance_score / 2) / 100,
+                            'fact_score': fact_score,
+                            'loyalty_score': loyalty_score,
+                        }
+                    }
+                }, ensure_ascii=False) + '\n')
+
         else:
             metrics = LEval_metric.compute(predictions=predictions, references=references)
             print(metrics)
+            with open(args.output_file, 'a') as file:
+                file.write(json.dumps({
+                    'results': {
+                        f'l_eval_{args.task_name}': {
+                            'score': metrics['LEval_score'] / 100
+                        }
+                    }
+                }, ensure_ascii=False) + '\n')
+
     else:
         print(config_name, "evaluation is not ready")
         input("press enter to continue calculate other metrics")
